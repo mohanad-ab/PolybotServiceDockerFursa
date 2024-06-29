@@ -6,7 +6,7 @@ on:
       - dev
 
 env:
-  BOT_INSTANCE_DOMAIN: dev.mydomain.click  # TODO replace to your bot domain
+  BOT_INSTANCE_DOMAIN: dev-bot.mohanadfursa.click  # TODO replace to your bot domain
 
 jobs:
   PolybotBuild:
@@ -19,11 +19,17 @@ jobs:
         run: |
           cd polybot
 
+          echo "${{ secrets.CERT_PEM }}" > YOURPUBLIC.pem
+          echo "${{ secrets.SSL_PRIVATE_KEY }}" > YOURPRIVATE.key
+
           docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_PASSWORD }}
 
           IMAGE_NAME=polybot:${{ github.run_number }}
           docker build -t $IMAGE_NAME .
-          docker push $IMAGE_NAME
+          docker tag $IMAGE_NAME ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_NAME
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_NAME
+          
+          rm YOURPUBLIC.pem YOURPRIVATE.key
 
   Yolo5Build:
     runs-on: ubuntu-latest
@@ -39,7 +45,8 @@ jobs:
 
           IMAGE_NAME=yolo5:${{ github.run_number }}
           docker build -t $IMAGE_NAME .
-          docker push $IMAGE_NAME
+          docker tag $IMAGE_NAME ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_NAME
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_NAME
 
   Deploy:
     name: Deploy Docker compose project
@@ -76,10 +83,14 @@ jobs:
             echo -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" > telegram_bot_token.secret
             
             # Generate .env file
-            echo """
-            POLYBOT_IMG_NAME=polybot:${{ github.run_number }}
-            YOLO5_IMG_NAME=yolo5:${{ github.run_number }}
-            TELEGRAM_APP_URL=$BOT_INSTANCE_DOMAIN
+            echo """TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+            S3_BUCKET=mohanad-s3
+            YOLO_SERVICE_URL=http://flask-predict-app:8081
+            MONGO_URI=mongodb://mongo1:27017/
+            BUCKET_NAME=mohanad-s3
+            POLYBOT_IMG_NAME=${{ secrets.DOCKERHUB_USERNAME }}/polybot:${{ github.run_number }}
+            YOLO5_IMG_NAME=${{ secrets.DOCKERHUB_USERNAME }}/yolo5:${{ github.run_number }}
+            TELEGRAM_APP_URL=https://${{ env.BOT_INSTANCE_DOMAIN }}:8443
             """ > .env
             
             # Take the service down
@@ -87,3 +98,11 @@ jobs:
             
             # Take it up with the current updated values
             docker compose up -d
+            sleep 10
+            # check if replica set initialized
+            docker exec mongo1 mongosh --eval 'rs.status()' | grep -q '"ok" : 0'
+            if [ $? -eq 0 ]; then
+              docker exec mongo1 mongosh --eval 'rs.initiate({_id: "myReplicaSet", members: [{_id: 0, host: "mongo1"}, {_id: 1, host: "mongo2"}, {_id: 2, host: "mongo3"}]})'
+            fi
+            
+            
